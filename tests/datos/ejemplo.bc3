@@ -1,0 +1,18 @@
+~V|Ayuntamiento de Ejemplo|FIEBDC-3/2020\01092026|Presto|Obra de ejemplo\|ANSI||2|||
+~K|2\2\2\3\2\2\2\2\EUR\|0|13|6|0|21|
+~C|EJ##||Reforma de nave|0|010926|0|
+~C|01#||Movimiento de tierras|0|010926|0|
+~C|02#||Cimentación|0|010926|0|
+~C|E01|m3|Excavación en zanja|0|010926|0|
+~T|E01|Excavación en zanja en terreno compacto, por medios mecánicos, incluso carga sobre camión.|
+~C|E02|m3|Hormigón HA-25 en zapatas|0|010926|0|
+~C|MO01|h|Peón ordinario|18,50|010926|1|
+~C|MQ01|h|Retroexcavadora|45|010926|2|
+~C|MT01|m3|Hormigón HA-25/B/20/IIa|78.20|010926|3|
+~D|EJ##|01#\1\1\02#\1\1\|
+~D|01#|E01\1\120\|
+~D|02#|E02\1\35.5\|
+~D|E01|MO01\1\0.1\MQ01\1\0.05\|
+~D|E02|MO01\1\0.8\MT01\1\1.05\|
+~M|01\E01|1\1\|120|\Zanja A\2\20\0.6\1.5\\Zanja B\4\10\0.5\1.2\|
+~M|02\E02|2\1\|35.5|\Zapatas\10\1.5\1.5\1.5\\Riostras\1\2.75\\\|
