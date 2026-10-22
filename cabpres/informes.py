@@ -15,7 +15,7 @@ def numero(valor: float, decimales: int = 2) -> str:
 
 ESTILO = """
 <style>
- body { font-family: Arial, sans-serif; font-size: 9pt; }
+ body { font-family: Arial, sans-serif; font-size: 8pt; }
  h1 { font-size: 14pt; margin-bottom: 2px; }
  h2 { font-size: 11pt; margin-top: 14px; }
  table { border-collapse: collapse; width: 100%; }
@@ -32,6 +32,16 @@ ESTILO = """
 
 
 def certificacion(obra: Obra, n: int) -> str:
+    with calculo.sin_cambios():
+        return _certificacion(obra, n)
+
+
+def presupuesto(obra: Obra) -> str:
+    with calculo.sin_cambios():
+        return _presupuesto(obra)
+
+
+def _certificacion(obra: Obra, n: int) -> str:
     cert = obra.certificacion(n)
     if cert is None:
         raise ValueError(f"No existe la certificación n.º {n}")
@@ -46,19 +56,21 @@ def certificacion(obra: Obra, n: int) -> str:
             if hijo is None or d.codigo in visitando:
                 continue
             cer = calculo.certificado(obra, codigo, i, n)
-            sangria = "&nbsp;" * 4 * nivel
             if hijo.es_agrupador:
-                filas.append(f'<tr class="cap"><td>{sangria}{escape(d.codigo)}</td><td></td>'
-                             f'<td colspan="5">{escape(hijo.resumen)}</td><td></td><td></td><td></td></tr>')
+                if not (cer.importe_origen or cer.importe_anterior):
+                    continue  # capítulo sin nada certificado
+                filas.append(f'<tr class="cap"><td>{escape(d.codigo)}</td><td></td>'
+                             f'<td colspan="8" style="padding-left:{8 * nivel}px">{escape(hijo.resumen)}</td></tr>')
                 visitar(d.codigo, nivel + 1, visitando | {d.codigo})
-                filas.append(f'<tr class="sub"><td></td><td></td><td colspan="5">Total {escape(d.codigo)}</td>'
+                filas.append(f'<tr class="sub"><td></td><td></td><td colspan="5">Total {escape(d.codigo)}'
+                             f' {escape(hijo.resumen)}</td>'
                              f'<td class="n">{numero(cer.importe_anterior)}</td>'
                              f'<td class="n">{numero(cer.importe_actual)}</td>'
                              f'<td class="n">{numero(cer.importe_origen)}</td></tr>')
             elif cer.origen or cer.importe_origen:
                 filas.append(
-                    f'<tr><td>{sangria}{escape(d.codigo)}</td><td>{escape(hijo.unidad)}</td>'
-                    f'<td>{escape(hijo.resumen)}</td>'
+                    f'<tr><td>{escape(d.codigo)}</td><td>{escape(hijo.unidad)}</td>'
+                    f'<td style="padding-left:{8 * nivel}px">{escape(hijo.resumen)}</td>'
                     f'<td class="n">{numero(calculo.precio(obra, d.codigo), dp)}</td>'
                     f'<td class="n">{numero(cer.anterior, 3)}</td><td class="n">{numero(cer.actual, 3)}</td>'
                     f'<td class="n">{numero(cer.origen, 3)}</td>'
@@ -84,17 +96,18 @@ def certificacion(obra: Obra, n: int) -> str:
 <div>Propiedad: {escape(obra.propiedad)}</div>
 <div>Fecha: {cert.fecha.strftime('%d/%m/%Y')}</div>
 <h2>Relación valorada</h2>
-<table>
-<tr><th>Código</th><th>Ud</th><th>Resumen</th><th class="n">Precio</th>
-<th class="n">Cant. anterior</th><th class="n">Cant. actual</th><th class="n">Cant. origen</th>
-<th class="n">Imp. anterior</th><th class="n">Imp. actual</th><th class="n">Imp. origen</th></tr>
+<table width="100%" cellspacing="0" cellpadding="2">
+<tr><th width="10%">Código</th><th width="3%">Ud</th><th width="30%">Resumen</th><th class="n" width="6%">Precio</th>
+<th class="n" width="7%">Cant. anterior</th><th class="n" width="7%">Cant. actual</th>
+<th class="n" width="7%">Cant. origen</th><th class="n" width="10%">Imp. anterior</th>
+<th class="n" width="10%">Imp. actual</th><th class="n" width="10%">Imp. origen</th></tr>
 {''.join(filas)}
 <tr class="total"><td></td><td></td><td colspan="5">TOTAL EJECUCIÓN MATERIAL</td>
 <td class="n">{numero(total.importe_anterior)}</td><td class="n">{numero(total.importe_actual)}</td>
 <td class="n">{numero(total.importe_origen)}</td></tr>
 </table>
 <h2>Resumen</h2>
-<table class="resumen">
+<table class="resumen" width="70%" cellspacing="0" cellpadding="2">
 <tr><th></th><th class="n">A origen</th><th class="n">Anterior</th><th class="n">Esta certificación</th></tr>
 {fila_resumen('Presupuesto de ejecución material', r_ant.pem, r_ori.pem)}
 {fila_resumen(f'Gastos generales ({numero(p.gastos_generales)} %)', r_ant.gastos_generales, r_ori.gastos_generales)}
@@ -110,7 +123,7 @@ def certificacion(obra: Obra, n: int) -> str:
 </body></html>"""
 
 
-def presupuesto(obra: Obra) -> str:
+def _presupuesto(obra: Obra) -> str:
     raiz = obra.conceptos[obra.raiz]
     dp = obra.parametros.decimales_precio
     filas: list[str] = []
@@ -143,13 +156,13 @@ def presupuesto(obra: Obra) -> str:
 <h1>{escape(raiz.resumen)}</h1>
 <div>Propiedad: {escape(obra.propiedad)}</div>
 <h2>Presupuesto</h2>
-<table>
-<tr><th>Código</th><th>Ud</th><th>Resumen</th><th class="n">Cantidad</th><th class="n">Precio</th>
-<th class="n">Importe</th></tr>
+<table width="100%" cellspacing="0" cellpadding="2">
+<tr><th width="12%">Código</th><th width="4%">Ud</th><th width="50%">Resumen</th><th class="n" width="10%">Cantidad</th>
+<th class="n" width="10%">Precio</th><th class="n" width="14%">Importe</th></tr>
 {''.join(filas)}
 </table>
 <h2>Resumen</h2>
-<table class="resumen">
+<table class="resumen" width="70%" cellspacing="0" cellpadding="2">
 <tr><td>Presupuesto de ejecución material</td><td class="n">{numero(r.pem)}</td></tr>
 <tr><td>Gastos generales ({numero(p.gastos_generales)} %)</td><td class="n">{numero(r.gastos_generales)}</td></tr>
 <tr><td>Beneficio industrial ({numero(p.beneficio_industrial)} %)</td><td class="n">{numero(r.beneficio_industrial)}</td></tr>

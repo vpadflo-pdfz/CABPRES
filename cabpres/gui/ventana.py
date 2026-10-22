@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 from .. import bc3, calculo, informes, proyecto
 from ..informes import numero
 from ..modelo import (
-    CAPITULO, MANO_OBRA, MAQUINARIA, MATERIAL, PARTIDA, Concepto, LineaMedicion, Medicion, Obra,
+    CAPITULO, MANO_OBRA, MAQUINARIA, MATERIAL, PARTIDA, PORCENTAJE, Concepto, LineaMedicion, Medicion, Obra,
 )
 from .dialogos import DialogoFecha, DialogoInforme, DialogoParametros
 from .tablas import TablaMedicion, celda, leer_numero
@@ -28,7 +28,7 @@ ROL = Qt.UserRole
 FILTRO_OBRA = "Obra de CABPRES (*.obra)"
 FILTRO_BC3 = "FIEBDC-3 (*.bc3 *.BC3)"
 NOMBRES_NATURALEZA = {MANO_OBRA: "Mano de obra", MAQUINARIA: "Maquinaria", MATERIAL: "Material",
-                      PARTIDA: "Partida", CAPITULO: "Capítulo"}
+                      PARTIDA: "Partida", CAPITULO: "Capítulo", PORCENTAJE: "Porcentaje"}
 COLOR_CERT = QColor("#eef6ee")
 
 
@@ -67,7 +67,7 @@ class VentanaPrincipal(QMainWindow):
         cabecera = self.arbol.header()
         cabecera.setSectionResizeMode(COL_RESUMEN, QHeaderView.Stretch)
         cabecera.setStretchLastSection(False)
-        for col, ancho in ((COL_CODIGO, 150), (COL_UD, 45)):
+        for col, ancho in ((COL_CODIGO, 210), (COL_UD, 45)):
             self.arbol.setColumnWidth(col, ancho)
         for col in range(COL_CANTIDAD, COL_PORCENTAJE + 1):
             self.arbol.setColumnWidth(col, 95)
@@ -313,6 +313,11 @@ class VentanaPrincipal(QMainWindow):
                 else:
                     item.setText(COL_CANTIDAD, numero(calculo.cantidad(self.obra, padre, indice), 3))
                     item.setText(COL_PRECIO, numero(pu, dp))
+                    cursiva = QFont(item.font(COL_PRECIO))
+                    cursiva.setItalic(c.precio_fijo and bool(c.hijos))
+                    item.setFont(COL_PRECIO, cursiva)
+                    item.setToolTip(COL_PRECIO, "Precio fijo (de contrato): no se recalcula con la "
+                                    "descomposición" if c.precio_fijo and c.hijos else "")
                 item.setText(COL_IMPORTE, numero(imp))
                 if n is not None:
                     cer = calculo.certificado(self.obra, padre, indice, n)
@@ -327,9 +332,10 @@ class VentanaPrincipal(QMainWindow):
             for i in range(item.childCount()):
                 pintar(item.child(i))
 
-        pintar(self.arbol.topLevelItem(0))
+        with calculo.sin_cambios():
+            pintar(self.arbol.topLevelItem(0))
+            self._actualizar_totales()
         self._actualizando = False
-        self._actualizar_totales()
 
     def _pintar_cert(self, item: QTreeWidgetItem, cer: calculo.Certificado, importe_pres: float,
                      con_cantidades: bool) -> None:
@@ -368,13 +374,12 @@ class VentanaPrincipal(QMainWindow):
         if col == COL_UD:
             return not c.es_agrupador
         if col == COL_PRECIO:
-            return not c.es_agrupador and not c.hijos
+            return not c.es_agrupador
+        d = self.obra.conceptos[padre].hijos[indice]
         if col == COL_CANTIDAD:
-            med = self.obra.mediciones.get((padre, codigo))
-            return not c.es_agrupador and (med is None or not med.lineas)
+            return not c.es_agrupador and (d.medicion is None or not d.medicion.lineas)
         if col == COL_ACTUAL and self.numero_cert is not None:
-            cert = self.obra.certificacion(self.numero_cert)
-            med = cert.mediciones.get((padre, codigo))
+            med = d.certificado.get(self.numero_cert)
             return not c.es_agrupador and (med is None or not med.lineas)
         return False
 
@@ -411,13 +416,15 @@ class VentanaPrincipal(QMainWindow):
                 c.unidad = texto
             elif col == COL_PRECIO:
                 c.precio = leer_numero(texto) or 0.0
+                # con descomposición, escribir un precio lo fija (precio de contrato)
+                c.precio_fijo = bool(c.hijos)
             elif col == COL_CANTIDAD:
                 valor = leer_numero(texto) or 0.0
-                calculo.medicion_de(self.obra, padre, codigo).total_directo = valor
+                calculo.medicion_de(self.obra, padre, indice).total_directo = valor
                 self.obra.conceptos[padre].hijos[indice].rendimiento = valor
             elif col == COL_ACTUAL:
-                cert = self.obra.certificacion(self.numero_cert)
-                cert.mediciones[(padre, codigo)] = Medicion(total_directo=leer_numero(texto) or 0.0)
+                calculo.certificado_de(self.obra, padre, indice, self.numero_cert).total_directo = (
+                    leer_numero(texto) or 0.0)
             else:
                 return
         except ValueError as e:
@@ -440,12 +447,12 @@ class VentanaPrincipal(QMainWindow):
         es_partida = padre is not None and c is not None and not c.es_agrupador
 
         self.tabla_medicion.set_medicion(
-            calculo.medicion_de(self.obra, padre, codigo) if es_partida else None)
+            calculo.medicion_de(self.obra, padre, indice) if es_partida else None)
 
         n = self.numero_cert
         cert = self.obra.certificacion(n) if n is not None else None
         if cert is not None and es_partida:
-            self.tabla_cert.set_medicion(cert.mediciones.setdefault((padre, codigo), Medicion()))
+            self.tabla_cert.set_medicion(calculo.certificado_de(self.obra, padre, indice, n))
             self._actualizar_info_cert()
         else:
             self.tabla_cert.set_medicion(None)
@@ -485,23 +492,20 @@ class VentanaPrincipal(QMainWindow):
         padre, indice, codigo = self._referencia(self.arbol.currentItem())
         if padre is None or self.numero_cert is None:
             return
-        pendiente = calculo.medicion_pendiente(self.obra, padre, codigo, self.numero_cert)
-        cert = self.obra.certificacion(self.numero_cert)
-        actual = cert.mediciones.get((padre, codigo))
-        ya = actual.total() if actual else 0.0
+        pendiente = calculo.medicion_pendiente(self.obra, padre, indice, self.numero_cert)
+        actual = calculo.certificado_de(self.obra, padre, indice, self.numero_cert)
+        ya = actual.total()
         if abs(pendiente - ya) < 1e-9:
             return
-        self.tabla_cert.insertar_linea(len(actual.lineas) if actual else 0,
-                                       LineaMedicion("Resto pendiente", pendiente - ya))
+        self.tabla_cert.insertar_linea(len(actual.lineas), LineaMedicion("Resto pendiente", pendiente - ya))
 
     def copiar_lineas_presupuesto(self) -> None:
         padre, indice, codigo = self._referencia(self.arbol.currentItem())
-        med = self.obra.mediciones.get((padre, codigo)) if padre else None
+        med = self.obra.conceptos[padre].hijos[indice].medicion if padre else None
         if med is None or not med.lineas:
             QMessageBox.information(self, "Certificación", "La partida no tiene líneas de medición.")
             return
-        cert = self.obra.certificacion(self.numero_cert)
-        destino = cert.mediciones.setdefault((padre, codigo), Medicion())
+        destino = calculo.certificado_de(self.obra, padre, indice, self.numero_cert)
         for linea in med.lineas:
             self.tabla_cert.insertar_linea(len(destino.lineas), LineaMedicion(
                 linea.comentario, linea.unidades, linea.longitud, linea.anchura, linea.altura, linea.tipo))
@@ -510,9 +514,8 @@ class VentanaPrincipal(QMainWindow):
         self._cargando_desc = True
         self.tabla_desc.setRowCount(0)
         if c is not None:
-            for i, d in enumerate(c.hijos):
+            for i, (d, (pu, imp)) in enumerate(zip(c.hijos, calculo.lineas(self.obra, c.codigo))):
                 h = self.obra.conceptos[d.codigo]
-                pu = calculo.precio(self.obra, d.codigo)
                 self.tabla_desc.insertRow(i)
                 self.tabla_desc.setItem(i, 0, celda(d.codigo))
                 self.tabla_desc.setItem(i, 1, celda(h.unidad))
@@ -520,9 +523,8 @@ class VentanaPrincipal(QMainWindow):
                 self.tabla_desc.setItem(i, 3, celda(NOMBRES_NATURALEZA.get(h.naturaleza, ""), editable=False))
                 self.tabla_desc.setItem(i, 4, celda(numero(d.rendimiento, 3), derecha=True))
                 self.tabla_desc.setItem(i, 5, celda(numero(pu, self.obra.parametros.decimales_precio),
-                                                    editable=not h.hijos, derecha=True))
-                self.tabla_desc.setItem(i, 6, celda(numero(pu * d.factor * d.rendimiento), editable=False,
-                                                    derecha=True))
+                                                    editable=not h.hijos and not h.es_porcentaje, derecha=True))
+                self.tabla_desc.setItem(i, 6, celda(numero(imp), editable=False, derecha=True))
         self._cargando_desc = False
 
     def _celda_desc_cambiada(self, item) -> None:
@@ -542,8 +544,10 @@ class VentanaPrincipal(QMainWindow):
                 h.resumen = item.text()
             elif col == 4:
                 d.rendimiento = leer_numero(item.text()) or 0.0
+                c.precio_fijo = False  # al tocar la descomposición, se vuelve a calcular
             elif col == 5:
                 h.precio = leer_numero(item.text()) or 0.0
+                c.precio_fijo = False
         except ValueError as e:
             QMessageBox.warning(self, "Valor no válido", str(e))
         self._marcar_modificado()
@@ -559,6 +563,7 @@ class VentanaPrincipal(QMainWindow):
         nuevo = Concepto(self.obra.codigo_libre(prefijo), NOMBRES_NATURALEZA[naturaleza],
                          {MANO_OBRA: "h", MAQUINARIA: "h"}.get(naturaleza, "ud"), naturaleza=naturaleza)
         self.obra.anadir_hijo(codigo, nuevo)
+        c.precio_fijo = False
         self._marcar_modificado()
         self.refrescar()
         self._rellenar_descomposicion(c)
@@ -573,6 +578,7 @@ class VentanaPrincipal(QMainWindow):
         if c.es_agrupador or not 0 <= fila < len(c.hijos):
             return
         self.obra.quitar_hijo(codigo, fila)
+        c.precio_fijo = False
         self._marcar_modificado()
         self.refrescar()
         self._rellenar_descomposicion(c)
@@ -795,6 +801,22 @@ class VentanaPrincipal(QMainWindow):
         self.statusBar().showMessage(
             f"Importado {Path(ruta).name} ({len(obra.conceptos)} conceptos, programa: "
             f"{cabecera.get('programa') or 'desconocido'})", 8000)
+        if cabecera.get("precios_fijados"):
+            QMessageBox.information(
+                self, "Importar BC3",
+                f"{cabecera['precios_fijados']} partidas no dan exactamente el precio del fichero al "
+                "recalcular su descomposición (diferencias de redondeo del programa de origen).\n\n"
+                "Se conserva el precio del fichero, que es el de contrato. Aparecen en cursiva; "
+                "si modificas su descomposición, vuelven a calcularse.")
+        if cabecera.get("capitulos_descuadrados"):
+            detalle = "\n".join(
+                f"  {cod}: el fichero dice {numero(f)}, sus partidas suman {numero(c)}"
+                for cod, f, c in cabecera["capitulos_descuadrados"])
+            QMessageBox.warning(
+                self, "Importar BC3",
+                "En el fichero hay capítulos cuyo total no es la suma de sus partidas "
+                "(el programa de origen guardó un total sin recalcular):\n\n" + detalle +
+                "\n\nCABPRES usa la suma de las partidas.")
 
     def exportar_bc3(self) -> None:
         ruta, _ = QFileDialog.getSaveFileName(self, "Exportar BC3", self._nombre_base() + ".bc3", FILTRO_BC3)

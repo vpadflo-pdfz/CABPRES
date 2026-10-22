@@ -1,6 +1,7 @@
 """Cálculo de precios, importes y certificaciones."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 from .modelo import Medicion, Obra
@@ -9,16 +10,31 @@ from .modelo import Medicion, Obra
 def redondear(valor: float, decimales: int) -> float:
     # round() de Python redondea al par; en presupuestos se redondea "hacia arriba" desde .5
     from decimal import ROUND_HALF_UP, Decimal
-    return float(Decimal(repr(valor)).quantize(Decimal(1).scaleb(-decimales), rounding=ROUND_HALF_UP))
+    # round(…, 9) quita el error binario: 26.5 * 0.35 da 9.274999… y debe redondear a 9.28
+    return float(Decimal(repr(round(valor, 9))).quantize(Decimal(1).scaleb(-decimales), rounding=ROUND_HALF_UP))
 
 
 def cantidad(obra: Obra, padre: str, indice: int) -> float:
     """Cantidad del hijo `indice` de `padre`: su medición si la tiene, si no el rendimiento."""
     d = obra.conceptos[padre].hijos[indice]
-    med = obra.mediciones.get((padre, d.codigo))
-    if med is not None and not med.vacia():
-        return med.total()
+    if d.medicion is not None and not d.medicion.vacia():
+        return redondear(d.medicion.total(), obra.parametros.decimales_medicion)
     return d.rendimiento
+
+
+_cache: dict[str, float] | None = None
+
+
+@contextmanager
+def sin_cambios():
+    """Bloque en el que la obra no se modifica: los precios calculados se reutilizan."""
+    global _cache
+    anterior = _cache
+    _cache = {} if anterior is None else anterior
+    try:
+        yield
+    finally:
+        _cache = anterior
 
 
 def precio(obra: Obra, codigo: str, _visitando: frozenset[str] = frozenset()) -> float:
@@ -26,18 +42,39 @@ def precio(obra: Obra, codigo: str, _visitando: frozenset[str] = frozenset()) ->
     c = obra.conceptos.get(codigo)
     if c is None or codigo in _visitando:
         return 0.0
-    if not c.hijos:
+    if not c.hijos or (c.precio_fijo and not c.es_agrupador):
         return c.precio
-    p = obra.parametros
+    if _cache is not None and codigo in _cache:
+        return _cache[codigo]
+    total = sum(imp for _, imp in lineas(obra, codigo, _visitando))
+    resultado = redondear(total, obra.parametros.decimales_precio)
+    if _cache is not None:
+        _cache[codigo] = resultado
+    return resultado
+
+
+def lineas(obra: Obra, codigo: str, _visitando: frozenset[str] = frozenset()) -> list[tuple[float, float]]:
+    """(precio unitario, importe) de cada línea de la descomposición de `codigo`.
+
+    En las líneas de porcentaje el "precio" es la base: la suma de las líneas anteriores.
+    """
+    c = obra.conceptos[codigo]
+    dec = obra.parametros.decimales_importe
     visitando = _visitando | {codigo}
+    resultado = []
     total = 0.0
     for i, d in enumerate(c.hijos):
-        pu = precio(obra, d.codigo, visitando)
-        if c.es_agrupador:
-            total += redondear(pu * cantidad(obra, codigo, i), p.decimales_importe)
+        hijo = obra.conceptos.get(d.codigo)
+        if hijo is not None and hijo.es_porcentaje:
+            # porcentaje (rendimiento en tanto por uno) sobre la suma de lo anterior
+            pu, imp = total, redondear(total * d.factor * d.rendimiento, dec)
         else:
-            total += redondear(pu * d.factor * d.rendimiento, p.decimales_importe)
-    return redondear(total, p.decimales_precio)
+            pu = precio(obra, d.codigo, visitando)
+            q = cantidad(obra, codigo, i) if c.es_agrupador else d.factor * d.rendimiento
+            imp = redondear(pu * q, dec)
+        total += imp
+        resultado.append((pu, imp))
+    return resultado
 
 
 def importe(obra: Obra, padre: str, indice: int) -> float:
@@ -64,15 +101,11 @@ class Certificado:
         return self.importe_anterior + self.importe_actual
 
 
-def _cantidad_certificada(obra: Obra, padre: str, hijo: str, desde: int, hasta: int) -> float:
+def _cantidad_certificada(obra: Obra, padre: str, indice: int, desde: int, hasta: int) -> float:
     """Suma de lo certificado en las certificaciones con desde <= numero <= hasta."""
-    total = 0.0
-    for cert in obra.certificaciones:
-        if desde <= cert.numero <= hasta:
-            med = cert.mediciones.get((padre, hijo))
-            if med is not None:
-                total += med.total()
-    return total
+    d = obra.conceptos[padre].hijos[indice]
+    dec = obra.parametros.decimales_medicion
+    return sum(redondear(m.total(), dec) for n, m in d.certificado.items() if desde <= n <= hasta)
 
 
 def certificado(obra: Obra, padre: str, indice: int, numero: int) -> Certificado:
@@ -93,8 +126,8 @@ def certificado(obra: Obra, padre: str, indice: int, numero: int) -> Certificado
         r.importe_actual = redondear(r.importe_actual, dec)
         return r
     pu = precio(obra, d.codigo)
-    anterior = _cantidad_certificada(obra, padre, d.codigo, 1, numero - 1)
-    actual = _cantidad_certificada(obra, padre, d.codigo, numero, numero)
+    anterior = _cantidad_certificada(obra, padre, indice, 1, numero - 1)
+    actual = _cantidad_certificada(obra, padre, indice, numero, numero)
     importe_anterior = redondear(anterior * pu, dec)
     importe_origen = redondear((anterior + actual) * pu, dec)
     # el importe actual se obtiene por diferencia para que anterior + actual == origen
@@ -137,11 +170,17 @@ def resumen(obra: Obra, pem: float) -> Resumen:
     return Resumen(pem, gg, bi, baja, base, iva, redondear(base + iva, dec))
 
 
-def medicion_pendiente(obra: Obra, padre: str, hijo: str, numero: int) -> float:
+def medicion_pendiente(obra: Obra, padre: str, indice: int, numero: int) -> float:
     """Cantidad de presupuesto que queda por certificar antes de la certificación `numero`."""
-    indice = next(i for i, d in enumerate(obra.conceptos[padre].hijos) if d.codigo == hijo)
-    return cantidad(obra, padre, indice) - _cantidad_certificada(obra, padre, hijo, 1, numero - 1)
+    return cantidad(obra, padre, indice) - _cantidad_certificada(obra, padre, indice, 1, numero - 1)
 
 
-def medicion_de(obra: Obra, padre: str, hijo: str) -> Medicion:
-    return obra.mediciones.setdefault((padre, hijo), Medicion())
+def medicion_de(obra: Obra, padre: str, indice: int) -> Medicion:
+    d = obra.conceptos[padre].hijos[indice]
+    if d.medicion is None:
+        d.medicion = Medicion()
+    return d.medicion
+
+
+def certificado_de(obra: Obra, padre: str, indice: int, numero: int) -> Medicion:
+    return obra.conceptos[padre].hijos[indice].certificado.setdefault(numero, Medicion())

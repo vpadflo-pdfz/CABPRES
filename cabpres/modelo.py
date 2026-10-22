@@ -15,6 +15,7 @@ PARTIDA = "partida"
 MANO_OBRA = "mano_obra"
 MAQUINARIA = "maquinaria"
 MATERIAL = "material"
+PORCENTAJE = "porcentaje"  # p. ej. costes indirectos: se aplica sobre lo anterior
 OTRO = "otro"
 
 # Tipo de concepto en BC3 (campo TIPO de ~C) <-> naturaleza
@@ -67,9 +68,17 @@ class Medicion:
 
 @dataclass
 class Descomposicion:
+    """Una línea de la descomposición de un concepto.
+
+    En capítulos, cada línea es una partida con su medición y lo certificado de ella
+    (número de certificación -> medición de ese periodo). Van aquí y no indexados por
+    código porque una misma partida puede aparecer varias veces en un capítulo.
+    """
     codigo: str
     factor: float = 1.0
     rendimiento: float = 1.0
+    medicion: Medicion | None = None
+    certificado: dict[int, Medicion] = field(default_factory=dict)
 
 
 @dataclass
@@ -82,6 +91,13 @@ class Concepto:
     texto: str = ""
     fecha: str = ""
     hijos: list[Descomposicion] = field(default_factory=list)
+    # Con descomposición, usar `precio` en vez del calculado (p. ej. el precio de contrato
+    # importado de un BC3 cuando el recálculo difiere en céntimos por redondeos del otro programa).
+    precio_fijo: bool = False
+
+    @property
+    def es_porcentaje(self) -> bool:
+        return self.naturaleza == PORCENTAJE
 
     @property
     def es_agrupador(self) -> bool:
@@ -90,10 +106,9 @@ class Concepto:
 
 @dataclass
 class Certificacion:
-    """Certificación n: mediciones ejecutadas EN ESTE PERIODO (no a origen)."""
+    """Certificación n. Lo ejecutado en el periodo se guarda en Descomposicion.certificado[n]."""
     numero: int
     fecha: date
-    mediciones: dict[tuple[str, str], Medicion] = field(default_factory=dict)
 
 
 @dataclass
@@ -105,6 +120,7 @@ class Parametros:
     decimales_precio: int = 2
     decimales_importe: int = 2
     decimales_rendimiento: int = 3
+    decimales_medicion: int = 3
     divisa: str = "EUR"
 
 
@@ -112,7 +128,6 @@ class Parametros:
 class Obra:
     raiz: str = "OBRA"
     conceptos: dict[str, Concepto] = field(default_factory=dict)
-    mediciones: dict[tuple[str, str], Medicion] = field(default_factory=dict)
     certificaciones: list[Certificacion] = field(default_factory=list)
     parametros: Parametros = field(default_factory=Parametros)
     propiedad: str = ""
@@ -154,13 +169,14 @@ class Obra:
         return self.conceptos[concepto.codigo]
 
     def quitar_hijo(self, padre: str, indice: int) -> None:
-        d = self.conceptos[padre].hijos.pop(indice)
-        clave = (padre, d.codigo)
-        if not any(h.codigo == d.codigo for h in self.conceptos[padre].hijos):
-            self.mediciones.pop(clave, None)
-            for cert in self.certificaciones:
-                cert.mediciones.pop(clave, None)
+        self.conceptos[padre].hijos.pop(indice)
         self._purgar_huerfanos()
+
+    def lineas(self):
+        """Todas las líneas de descomposición: (padre, índice, Descomposicion)."""
+        for c in self.conceptos.values():
+            for i, d in enumerate(c.hijos):
+                yield c.codigo, i, d
 
     def renombrar(self, viejo: str, nuevo: str) -> None:
         nuevo = nuevo.strip().rstrip("#")
@@ -179,13 +195,6 @@ class Obra:
             for d in otro.hijos:
                 if d.codigo == viejo:
                     d.codigo = nuevo
-
-        def renombrar_claves(meds: dict[tuple[str, str], Medicion]) -> dict[tuple[str, str], Medicion]:
-            return {(nuevo if p == viejo else p, nuevo if h == viejo else h): m for (p, h), m in meds.items()}
-
-        self.mediciones = renombrar_claves(self.mediciones)
-        for cert in self.certificaciones:
-            cert.mediciones = renombrar_claves(cert.mediciones)
 
     def mover_hijo(self, padre: str, indice: int, desplazamiento: int) -> int:
         hijos = self.conceptos[padre].hijos
@@ -216,3 +225,5 @@ class Obra:
 
     def borrar_certificacion(self, numero: int) -> None:
         self.certificaciones = [c for c in self.certificaciones if c.numero != numero]
+        for _, _, d in self.lineas():
+            d.certificado.pop(numero, None)

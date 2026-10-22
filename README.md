@@ -17,6 +17,11 @@ Lee y escribe FIEBDC-3 (`.bc3`), así que intercambia obras con Presto, Arquíme
     IVA, líquido de la certificación), exportable a PDF.
   - Exportación e importación de certificaciones en BC3 (tipo de información 3,
     cantidades a origen).
+- Importación BC3 probada con ficheros de Arquímedes (CYPE): porcentajes de costes
+  indirectos y medios auxiliares, partidas repetidas en un capítulo y ~K de FIEBDC-3/2004.
+  Si el programa de origen redondea distinto y una partida no da el precio del fichero,
+  se conserva el precio del fichero (precio de contrato, en cursiva). También avisa de los
+  capítulos cuyo total en el fichero no es la suma de sus partidas.
 - Archivo de obra propio (`.obra`, JSON) que guarda el presupuesto y todas las certificaciones.
 
 ## Uso

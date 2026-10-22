@@ -10,23 +10,36 @@ from .modelo import (
     Certificacion, Concepto, Descomposicion, LineaMedicion, Medicion, Obra, Parametros,
 )
 
-VERSION = 1
+VERSION = 2
 
 
-def _medicion_a_dict(m: Medicion) -> dict:
+def _medicion_a_dict(m: Medicion | None) -> dict | None:
+    if m is None:
+        return None
     return {"lineas": [asdict(l) for l in m.lineas], "total_directo": m.total_directo}
 
 
-def _medicion_desde_dict(d: dict) -> Medicion:
+def _medicion_desde_dict(d: dict | None) -> Medicion | None:
+    if d is None:
+        return None
     return Medicion([LineaMedicion(**l) for l in d.get("lineas", [])], d.get("total_directo", 0.0))
 
 
-def _mediciones_a_lista(meds: dict[tuple[str, str], Medicion]) -> list[dict]:
-    return [{"padre": p, "hijo": h, **_medicion_a_dict(m)} for (p, h), m in meds.items()]
+def _linea_a_dict(d: Descomposicion) -> dict:
+    datos = {"codigo": d.codigo, "factor": d.factor, "rendimiento": d.rendimiento}
+    if d.medicion is not None:
+        datos["medicion"] = _medicion_a_dict(d.medicion)
+    if d.certificado:
+        datos["certificado"] = {str(n): _medicion_a_dict(m) for n, m in sorted(d.certificado.items())}
+    return datos
 
 
-def _mediciones_desde_lista(lista: list[dict]) -> dict[tuple[str, str], Medicion]:
-    return {(d["padre"], d["hijo"]): _medicion_desde_dict(d) for d in lista}
+def _linea_desde_dict(datos: dict) -> Descomposicion:
+    return Descomposicion(
+        datos["codigo"], datos.get("factor", 1.0), datos.get("rendimiento", 1.0),
+        _medicion_desde_dict(datos.get("medicion")),
+        {int(n): _medicion_desde_dict(m) for n, m in datos.get("certificado", {}).items()},
+    )
 
 
 def a_dict(obra: Obra) -> dict:
@@ -37,15 +50,10 @@ def a_dict(obra: Obra) -> dict:
         "parametros": asdict(obra.parametros),
         "conceptos": [
             {**{k: v for k, v in asdict(c).items() if k != "hijos"},
-             "hijos": [asdict(d) for d in c.hijos]}
+             "hijos": [_linea_a_dict(d) for d in c.hijos]}
             for c in obra.conceptos.values()
         ],
-        "mediciones": _mediciones_a_lista(obra.mediciones),
-        "certificaciones": [
-            {"numero": c.numero, "fecha": c.fecha.isoformat(),
-             "mediciones": _mediciones_a_lista(c.mediciones)}
-            for c in obra.certificaciones
-        ],
+        "certificaciones": [{"numero": c.numero, "fecha": c.fecha.isoformat()} for c in obra.certificaciones],
     }
 
 
@@ -53,14 +61,31 @@ def desde_dict(datos: dict) -> Obra:
     obra = Obra(raiz=datos["raiz"], propiedad=datos.get("propiedad", ""))
     obra.parametros = Parametros(**datos.get("parametros", {}))
     for c in datos["conceptos"]:
-        hijos = [Descomposicion(**d) for d in c.pop("hijos", [])]
+        hijos = [_linea_desde_dict(d) for d in c.pop("hijos", [])]
         obra.conceptos[c["codigo"]] = Concepto(**c, hijos=hijos)
-    obra.mediciones = _mediciones_desde_lista(datos.get("mediciones", []))
     obra.certificaciones = [
-        Certificacion(c["numero"], date.fromisoformat(c["fecha"]), _mediciones_desde_lista(c["mediciones"]))
-        for c in datos.get("certificaciones", [])
+        Certificacion(c["numero"], date.fromisoformat(c["fecha"])) for c in datos.get("certificaciones", [])
     ]
+    if datos.get("version", 1) == 1:
+        _migrar_v1(obra, datos)
     return obra
+
+
+def _migrar_v1(obra: Obra, datos: dict) -> None:
+    """La versión 1 guardaba las mediciones aparte, indexadas por (padre, hijo)."""
+    def linea(padre: str, hijo: str) -> Descomposicion | None:
+        c = obra.conceptos.get(padre)
+        return next((d for d in c.hijos if d.codigo == hijo), None) if c else None
+
+    for m in datos.get("mediciones", []):
+        d = linea(m["padre"], m["hijo"])
+        if d is not None:
+            d.medicion = _medicion_desde_dict(m)
+    for cert in datos.get("certificaciones", []):
+        for m in cert.get("mediciones", []):
+            d = linea(m["padre"], m["hijo"])
+            if d is not None:
+                d.certificado[cert["numero"]] = _medicion_desde_dict(m)
 
 
 def guardar(obra: Obra, ruta: str | Path) -> None:

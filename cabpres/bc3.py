@@ -6,7 +6,7 @@ from pathlib import Path
 
 from . import calculo
 from .modelo import (
-    CAPITULO, NATURALEZA_DESDE_TIPO, OTRO, PARTIDA, RAIZ, TIPO_BC3,
+    CAPITULO, NATURALEZA_DESDE_TIPO, OTRO, PARTIDA, PORCENTAJE, RAIZ, TIPO_BC3,
     Certificacion, Concepto, Descomposicion, LineaMedicion, Medicion, Obra,
 )
 
@@ -92,13 +92,18 @@ def parsear(datos: bytes) -> tuple[Obra, dict]:
             }
             obra.propiedad = cabecera["propiedad"]
         elif tipo == "K":
-            # ~K|DN\DD\DS\DR\DI\DP\DC\DM\DIVISA|CI|GG|BI|BAJA|IVA|...
+            # FIEBDC-3: ~K|DN\DD\DS\DR\DI\DP\DC\DM\DIVISA\|CI\GG\BI\BAJA\IVA|...
+            # Algunos programas antiguos ponen CI|GG|BI|BAJA|IVA en campos separados.
             sub = _subcampos(f[1])
-            if len(sub) > 8 and sub[8].strip():
+            if len(sub) > 2 and _num(sub[2]) is not None:  # DS: decimales del total de medición
+                obra.parametros.decimales_medicion = int(_num(sub[2]))
+            if len(sub) > 8 and sub[8].strip() and _num(sub[8]) is None:
                 obra.parametros.divisa = sub[8].strip()
-            for atributo, indice in (("gastos_generales", 3), ("beneficio_industrial", 4),
-                                     ("baja", 5), ("iva", 6)):
-                v = _num(f[indice])
+            porcentajes = _subcampos(f[2]) if "\\" in f[2] else [f[i] for i in range(2, 7)]
+            porcentajes += [""] * 5
+            for atributo, indice in (("gastos_generales", 1), ("beneficio_industrial", 2),
+                                     ("baja", 3), ("iva", 4)):
+                v = _num(porcentajes[indice])
                 if v is not None:
                     setattr(obra.parametros, atributo, v)
         elif tipo == "C":
@@ -109,7 +114,9 @@ def parsear(datos: bytes) -> tuple[Obra, dict]:
             precios = [p for p in _subcampos(f[4]) if p.strip()]
             fechas = [p for p in _subcampos(f[5]) if p.strip()]
             tipo_c = f[6].strip()
-            if marcas >= 2:
+            if "%" in codigo:
+                naturaleza = PORCENTAJE
+            elif marcas >= 2:
                 naturaleza = RAIZ
                 raices.append(codigo)
             elif marcas == 1:
@@ -163,9 +170,49 @@ def parsear(datos: bytes) -> tuple[Obra, dict]:
             continue
         padre, _ = _codigo(sub[0])
         hijo, _ = _codigo(sub[1])
-        obra.mediciones[(padre, hijo)] = _leer_medicion(f)
+        indice = _indice_linea(obra, padre, hijo, f[2])
+        if indice is not None:
+            obra.conceptos[padre].hijos[indice].medicion = _leer_medicion(f)
 
+    # Precios de contrato: si el recálculo de una partida no da el precio del fichero
+    # (redondeos propios del programa de origen), se conserva el del fichero.
+    fijados = 0
+    for c in obra.conceptos.values():
+        if (c.hijos and not c.es_agrupador and c.precio  # precio 0 = sin precio en el fichero
+                and abs(calculo.precio(obra, c.codigo) - c.precio) > 0.005):
+            c.precio_fijo = True
+            fijados += 1
+    cabecera["precios_fijados"] = fijados
+    # Capítulos cuyo total en el fichero no es la suma de su contenido (el más interior)
+    descuadrados = []
+    for c in obra.conceptos.values():
+        if c.es_agrupador and c.precio and abs(calculo.precio(obra, c.codigo) - c.precio) > 0.005:
+            descuadrados.append((c.codigo, c.precio, calculo.precio(obra, c.codigo)))
+    codigos = {x[0] for x in descuadrados}
+    cabecera["capitulos_descuadrados"] = [
+        x for x in descuadrados
+        if not any(d.codigo in codigos and obra.conceptos[d.codigo].es_agrupador
+                   for d in obra.conceptos[x[0]].hijos)]
     return obra, cabecera
+
+
+def _indice_linea(obra: Obra, padre: str, hijo: str, posicion: str) -> int | None:
+    """Línea de la descomposición de `padre` a la que se refiere un ~M.
+
+    La última cifra de la posición (1, 2, ...) dice qué línea es cuando la misma partida
+    aparece varias veces; si falta o no cuadra, se usa la primera sin medición.
+    """
+    c = obra.conceptos.get(padre)
+    if c is None:
+        return None
+    partes = [x.strip() for x in _subcampos(posicion) if x.strip()]
+    if partes and partes[-1].isdigit():
+        i = int(partes[-1]) - 1
+        if 0 <= i < len(c.hijos) and c.hijos[i].codigo == hijo:
+            return i
+    candidatas = [i for i, d in enumerate(c.hijos) if d.codigo == hijo]
+    libres = [i for i in candidatas if c.hijos[i].medicion is None]
+    return (libres or candidatas or [None])[0]
 
 
 def _leer_medicion(f: list[str]) -> Medicion:
@@ -207,16 +254,24 @@ def importar_certificacion(obra: Obra, ruta: str | Path) -> Certificacion:
     if obra.certificacion(numero):
         raise ErrorBC3(f"La obra ya tiene la certificación n.º {numero}.")
     cert = Certificacion(numero, cabecera.get("fecha_certificacion") or date.today())
-    for (padre, hijo), med in datos.mediciones.items():
+    for padre, i, d_origen in datos.lineas():
         c = obra.conceptos.get(padre)
-        if c is None or not any(d.codigo == hijo for d in c.hijos):
+        if d_origen.medicion is None or c is None:
             continue
-        anterior = sum(m.total() for x in obra.certificaciones if x.numero < numero
-                       for k, m in x.mediciones.items() if k == (padre, hijo))
-        parcial = med.total() - anterior
-        if abs(parcial) > 1e-9:
-            cert.mediciones[(padre, hijo)] = Medicion(
-                [LineaMedicion(f"Importado de certificación a origen ({med.total():g})", parcial)])
+        # misma línea si coincide posición y código; si no, la n-ésima aparición del código
+        if i < len(c.hijos) and c.hijos[i].codigo == d_origen.codigo:
+            d = c.hijos[i]
+        else:
+            vez = sum(1 for x in datos.conceptos[padre].hijos[:i] if x.codigo == d_origen.codigo)
+            iguales = [x for x in c.hijos if x.codigo == d_origen.codigo]
+            if vez >= len(iguales):
+                continue
+            d = iguales[vez]
+        origen = d_origen.medicion.total()
+        anterior = sum(m.total() for n, m in d.certificado.items() if n < numero)
+        if abs(origen - anterior) > 1e-9:
+            d.certificado[numero] = Medicion(
+                [LineaMedicion(f"Importado de certificación a origen ({origen:g})", origen - anterior)])
     obra.certificaciones.append(cert)
     obra.certificaciones.sort(key=lambda x: x.numero)
     return cert
@@ -260,8 +315,8 @@ def generar(obra: Obra, certificacion: int | None = None) -> bytes:
     lineas.append("~V|{}|FIEBDC-3/2020\\{}|CABPRES|{}\\|ANSI||{}|{}|{}||".format(
         _limpio(obra.propiedad), _fecha_bc3(date.today()), _limpio(raiz.resumen), tipo_info,
         cert.numero if cert else "", _fecha_bc3(cert.fecha) if cert else ""))
-    lineas.append("~K|{d}\\{d}\\{d}\\{r}\\{i}\\{pr}\\{i}\\{i}\\{div}\\|0|{gg}|{bi}|{baja}|{iva}|".format(
-        d=p.decimales_importe, r=p.decimales_rendimiento, i=p.decimales_importe, pr=p.decimales_precio,
+    lineas.append("~K|{d}\\{d}\\{d}\\{r}\\{i}\\{pr}\\{i}\\{i}\\{div}\\|0\\{gg}\\{bi}\\{baja}\\{iva}|".format(
+        d=p.decimales_medicion, r=p.decimales_rendimiento, i=p.decimales_importe, pr=p.decimales_precio,
         div=p.divisa, gg=_n(p.gastos_generales), bi=_n(p.beneficio_industrial), baja=_n(p.baja),
         iva=_n(p.iva)))
 
@@ -284,19 +339,21 @@ def generar(obra: Obra, certificacion: int | None = None) -> bytes:
             partes.append(f"{_codigo_bc3(obra, d.codigo)}\\{_n(d.factor)}\\{_n(rend)}\\")
         lineas.append("~D|{}|{}|".format(_codigo_bc3(obra, codigo), "".join(partes)))
 
-    for padre, hijo, posicion in _posiciones(obra):
+    for padre, indice, posicion in _posiciones(obra):
+        d = obra.conceptos[padre].hijos[indice]
+        hijo = d.codigo
         if cert:
             # medición a origen: todas las certificaciones hasta la indicada
             lineas_med: list[LineaMedicion] = []
-            for x in obra.certificaciones:
-                if x.numero <= cert.numero and (padre, hijo) in x.mediciones:
-                    m = x.mediciones[(padre, hijo)]
-                    lineas_med += m.lineas or [LineaMedicion(f"Certificación {x.numero}", m.total())]
+            for n in sorted(d.certificado):
+                if n <= cert.numero:
+                    m = d.certificado[n]
+                    lineas_med += m.lineas or [LineaMedicion(f"Certificación {n}", m.total())]
             med = Medicion(lineas_med)
             if not lineas_med:
                 continue
         else:
-            med = obra.mediciones.get((padre, hijo))
+            med = d.medicion
             if med is None or med.vacia():
                 continue
         detalle = "".join("{}\\{}\\{}\\{}\\{}\\{}\\".format(
@@ -323,7 +380,7 @@ def _recorrido(obra: Obra) -> list[str]:
 
 
 def _posiciones(obra: Obra):
-    """Genera (padre, hijo, posición) de cada partida del árbol de presupuesto."""
+    """Genera (padre, índice, posición) de cada partida del árbol de presupuesto."""
     def visitar(codigo: str, ruta: list[int], visitando: frozenset[str]):
         c = obra.conceptos[codigo]
         for i, d in enumerate(c.hijos, start=1):
@@ -333,6 +390,6 @@ def _posiciones(obra: Obra):
             if hijo.es_agrupador:
                 yield from visitar(d.codigo, ruta + [i], visitando | {d.codigo})
             else:
-                yield codigo, d.codigo, ruta + [i]
+                yield codigo, i - 1, ruta + [i]
     if obra.raiz in obra.conceptos:
         yield from visitar(obra.raiz, [], frozenset({obra.raiz}))
