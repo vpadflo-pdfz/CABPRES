@@ -25,7 +25,7 @@ CABECERAS = ["Código", "Ud", "Resumen", "Cantidad", "Precio", "Importe",
              "Cert. anterior", "Cert. actual", "Cert. origen", "Imp. actual", "Imp. origen", "%"]
 COLUMNAS_CERT = range(COL_ANTERIOR, COL_PORCENTAJE + 1)
 ROL = Qt.UserRole
-FILTRO_OBRA = "Obra de Cimiento (*.obra)"
+FILTRO_OBRA = "Obra de CABPRES (*.obra)"
 FILTRO_BC3 = "FIEBDC-3 (*.bc3 *.BC3)"
 NOMBRES_NATURALEZA = {MANO_OBRA: "Mano de obra", MAQUINARIA: "Maquinaria", MATERIAL: "Material",
                       PARTIDA: "Partida", CAPITULO: "Capítulo"}
@@ -40,7 +40,7 @@ class VentanaPrincipal(QMainWindow):
         self.modificado = False
         self._actualizando = False
         self._cargando_desc = False
-        self.ajustes = QSettings("Cimiento", "Cimiento")
+        self.ajustes = QSettings("CABPRES", "CABPRES")
 
         self._crear_arbol()
         self._crear_paneles()
@@ -203,7 +203,7 @@ class VentanaPrincipal(QMainWindow):
 
     def _actualizar_titulo(self) -> None:
         nombre = self.ruta.name if self.ruta else "Sin título"
-        self.setWindowTitle(f"{nombre}{' *' if self.modificado else ''} — Cimiento")
+        self.setWindowTitle(f"{nombre}{' *' if self.modificado else ''} — CABPRES")
 
     def _rellenar_combo_cert(self, seleccionar: int | None = None) -> None:
         self.combo_cert.blockSignals(True)

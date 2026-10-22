@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pytest
 
-from cimiento import bc3, calculo, proyecto
-from cimiento.modelo import CAPITULO, MANO_OBRA, RAIZ, LineaMedicion, Medicion
+from cabpres import bc3, calculo, proyecto
+from cabpres.modelo import CAPITULO, MANO_OBRA, RAIZ, LineaMedicion, Medicion
 
 EJEMPLO = Path(__file__).parent / "datos" / "ejemplo.bc3"
 
@@ -72,7 +72,7 @@ def test_ida_y_vuelta_bc3(obra, tmp_path):
     ruta = tmp_path / "salida.bc3"
     bc3.escribir(obra, ruta)
     otra, cabecera = bc3.leer(ruta)
-    assert cabecera["programa"] == "Cimiento"
+    assert cabecera["programa"] == "CABPRES"
     assert set(otra.conceptos) == set(obra.conceptos)
     assert calculo.precio(otra, "EJ") == pytest.approx(calculo.precio(obra, "EJ"))
     assert otra.mediciones[("01", "E01")].total() == pytest.approx(60)
@@ -126,7 +126,7 @@ def test_renombrar(obra):
 
 
 def test_informes(obra):
-    from cimiento import informes
+    from cabpres import informes
     obra.nueva_certificacion(date(2026, 9, 30)).mediciones[("01", "E01")] = Medicion(total_directo=60)
     html = informes.certificacion(obra, 1)
     assert "Certificación n.º 1" in html and "246,00" in html

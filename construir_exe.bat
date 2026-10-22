@@ -1,7 +1,7 @@
 @echo off
-rem Genera dist\Cimiento\Cimiento.exe (requiere Python 3.10+ instalado en Windows)
+rem Genera dist\CABPRES\CABPRES.exe (requiere Python 3.10+ instalado en Windows)
 python -m pip install -r requirements.txt pyinstaller
-python -m PyInstaller --noconfirm --windowed --name Cimiento Cimiento.pyw
+python -m PyInstaller --noconfirm --windowed --name CABPRES CABPRES.pyw
 echo.
-echo Listo: dist\Cimiento\Cimiento.exe
+echo Listo: dist\CABPRES\CABPRES.exe
 pause

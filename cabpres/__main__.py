@@ -7,7 +7,7 @@ from .gui.ventana import VentanaPrincipal
 
 def main() -> int:
     app = QApplication(sys.argv)
-    app.setApplicationName("Cimiento")
+    app.setApplicationName("CABPRES")
     app.setStyle("Fusion")
     ventana = VentanaPrincipal()
     if len(sys.argv) > 1:

@@ -1,4 +1,4 @@
-# Cimiento
+# CABPRES
 
 Programa de escritorio para presupuestos, mediciones y **certificaciones** de obra.
 Lee y escribe FIEBDC-3 (`.bc3`), así que intercambia obras con Presto, Arquímedes, TCQ, etc.
@@ -23,10 +23,10 @@ Lee y escribe FIEBDC-3 (`.bc3`), así que intercambia obras con Presto, Arquíme
 
 ```
 pip install -r requirements.txt
-python -m cimiento [archivo.obra | archivo.bc3]
+python -m cabpres [archivo.obra | archivo.bc3]
 ```
 
-En Windows basta con hacer doble clic en `Cimiento.pyw`. Para generar un `.exe`
+En Windows basta con hacer doble clic en `CABPRES.pyw`. Para generar un `.exe`
 ejecuta `construir_exe.bat`.
 
 Atajos: F2 edita la celda, Ctrl+Mayús+N añade un capítulo, Ctrl+Mayús+P añade una

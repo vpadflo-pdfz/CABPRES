@@ -257,7 +257,7 @@ def generar(obra: Obra, certificacion: int | None = None) -> bytes:
         raise ErrorBC3(f"No existe la certificación n.º {certificacion}.")
     raiz = obra.conceptos[obra.raiz]
     tipo_info = TIPO_INFO_CERTIFICACION if cert else "2"
-    lineas.append("~V|{}|FIEBDC-3/2020\\{}|Cimiento|{}\\|ANSI||{}|{}|{}||".format(
+    lineas.append("~V|{}|FIEBDC-3/2020\\{}|CABPRES|{}\\|ANSI||{}|{}|{}||".format(
         _limpio(obra.propiedad), _fecha_bc3(date.today()), _limpio(raiz.resumen), tipo_info,
         cert.numero if cert else "", _fecha_bc3(cert.fecha) if cert else ""))
     lineas.append("~K|{d}\\{d}\\{d}\\{r}\\{i}\\{pr}\\{i}\\{i}\\{div}\\|0|{gg}|{bi}|{baja}|{iva}|".format(
